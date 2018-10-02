@@ -2,15 +2,18 @@
 
 A convenient memory view interface that allows different implementations, including lazy loading from disk, in-memory buffers, and mapped files.
 
-# Documentation
+# Examples
+
+TODO
+
+# Reference
 
 ``` cpp
 namespace mv
 {
-    class handler;
+    class base_handler;
 
-    template <typename T>
-    class span;
+    class owning_handler;
 
     struct begin_t;
 
@@ -20,9 +23,13 @@ namespace mv
 
     end_t end;
 
+    struct slice_data;
+
     class memory_view;
 
     class ptr_memory_source;
+
+    class istream_memory_source;
 
     template <typename Container>
     mv::memory_view make_memory_view(Container const& container);
@@ -32,35 +39,17 @@ namespace mv
 }
 ```
 
-### Class `mv::handler`
+### Class `mv::base_handler`
 
 ``` cpp
-class handler
+class base_handler
 {
 };
 ```
 
-A handler manages the lifetime of a fetched memory `span`.
+A handler manages the lifetime of a fetched memory area.
 
-When dealing with static memory, such as an in-memory array or a memory mapped file, the default empty object can be used. When managing memory by lazy loading or caching, this object defines the lifetime: once the handler object goes out of scope the memory pointed by the span can be invalidated. Effectively, this means that there is no guarantee that the memory pointed to by a span is valid after the span goes out of scope.
-
------
-
-### Class `mv::span`
-
-``` cpp
-template <typename T>
-class span
-: public gsl::span<const T>
-{
-public:
-    span(T const* ptr, std::ptrdiff_t count, std::shared_ptr<handler> handler = nullptr);
-
-    friend class memory_view;
-};
-```
-
-A span object points to a valid contiguous memory area.
+When dealing with static memory, such as an in-memory array or a memory mapped file, a nullptr can be used. When managing memory by lazy loading or caching, this object defines the lifetime: once the handler object goes out of scope the memory pointed by the view can be invalidated.
 
 -----
 
@@ -112,8 +101,10 @@ public:
     template <typename T>
     T as() const;
 
+    char const* as_ptr() const;
+
     template <typename T>
-    span<T> as_span() const;
+    gsl::span<const T> as_span() const;
 
     template <typename ... T>
     std::tuple<T...> unpack() const;
@@ -172,11 +163,21 @@ Casts data to the given type, starting at the beginning of the range.
 
 -----
 
+### Function `mv::memory_view::as_ptr`
+
+``` cpp
+char const* as_ptr() const;
+```
+
+Returns a span of the given type.
+
+-----
+
 ### Function `mv::memory_view::as_span`
 
 ``` cpp
 template <typename T>
-span<T> as_span() const;
+gsl::span<const T> as_span() const;
 ```
 
 Returns a span of the given type.
@@ -287,7 +288,7 @@ public:
 
     mv::ptr_memory_source& operator=(mv::ptr_memory_source&&) = default;
 
-    span<char> const as_span(std::ptrdiff_t begin, std::ptrdiff_t end) const;
+    mv::slice_data const slice(std::ptrdiff_t begin, std::ptrdiff_t end) const;
 
     std::size_t size() const;
 };
@@ -295,6 +296,39 @@ public:
 
 Memory source based on an existing contiguous memory area.
 
-**Warning**: any data passed to the constructors must be valid for the entire lifetime of the memory source. It must be enfoced by the user. In the future, this will be deprecated in favor of a lifetime-aware solution (although most likely this will still be available to use with a warning in place).
+**Warning**: any data passed to the constructors must be valid for the entire lifetime of the memory source. It must be enforced by the user. In the future, this will be deprecated in favor of a lifetime-aware solution (although most likely this will still be available to use with a warning in place).
 
 -----
+
+### Class `mv::istream_memory_source`
+
+``` cpp
+class istream_memory_source
+{
+public:
+    istream_memory_source(std::istream& stream, std::size_t size);
+
+    istream_memory_source() = default;
+
+    ~istream_memory_source() = default;
+
+    istream_memory_source(mv::istream_memory_source const&) = default;
+
+    istream_memory_source(mv::istream_memory_source&) = default;
+
+    mv::istream_memory_source& operator=(mv::istream_memory_source const&) = default;
+
+    mv::istream_memory_source& operator=(mv::istream_memory_source&&) = default;
+
+    mv::slice_data const slice(std::ptrdiff_t begin, std::ptrdiff_t end) const;
+
+    std::size_t size() const;
+};
+```
+
+Memory source based on an input stream.
+
+Each data access reads from the stream.
+
+-----
+

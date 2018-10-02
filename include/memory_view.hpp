@@ -263,6 +263,8 @@ private:
     std::size_t len_ = 0;
 };
 
+/// Memory source based on an input stream.
+/// Each data access reads from the stream.
 class istream_memory_source {
 public:
     istream_memory_source(std::istream& stream, std::size_t size)

@@ -48,37 +48,36 @@ TEST_F(ptr_memory_source_suite, size)
     ASSERT_EQ(mv.size(), arr.size());
 }
 
-TEST_F(ptr_memory_source_suite, as_ptr)
-{
-    ASSERT_EQ(mv.as_ptr(), &arr[0]);
-}
-
 TEST_F(ptr_memory_source_suite, inner_view)
 {
     memory_view inner = memory_view(ptr_memory_source(&arr[1], 2));
-    ASSERT_EQ(inner.as_ptr(), &arr[1]);
     ASSERT_EQ(inner.size(), 2);
+    auto span = inner.as_span<char>();
+    ASSERT_EQ(&span[0], &arr[1]);
 }
 
 TEST_F(ptr_memory_source_suite, range_slice)
 {
     auto slice = mv(1, 3);
-    ASSERT_EQ(slice.as_ptr(), &arr[1]);
     ASSERT_EQ(slice.size(), 2);
+    auto span = slice.as_span<char>();
+    ASSERT_EQ(&span[0], &arr[1]);
 }
 
 TEST_F(ptr_memory_source_suite, from_slice)
 {
     auto slice = mv(1, mv::end);
-    ASSERT_EQ(slice.as_ptr(), &arr[1]);
     ASSERT_EQ(slice.size(), 3);
+    auto span = slice.as_span<char>();
+    ASSERT_EQ(&span[0], &arr[1]);
 }
 
 TEST_F(ptr_memory_source_suite, to_slice)
 {
     auto slice = mv(mv::begin, 3);
-    ASSERT_EQ(slice.as_ptr(), &arr[0]);
     ASSERT_EQ(slice.size(), 3);
+    auto span = slice.as_span<char>();
+    ASSERT_EQ(&span[0], &arr[0]);
 }
 
 TEST_F(ptr_memory_source_suite, as_int)
@@ -149,6 +148,7 @@ TEST(memory_view, create_from_int_vector)
 {
     std::vector<int> vec = {0, 1, 2, 3};
     mv::memory_view mv = mv::make_memory_view(vec);
+    auto span = mv.as_span<char>();
     ASSERT_THAT(mv.as_span<int>(), ::testing::ElementsAreArray(vec));
 }
 

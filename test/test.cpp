@@ -164,6 +164,59 @@ TEST(memory_view, create_from_mapped_file)
     ASSERT_THAT(mv.as_span<int>(), ::testing::ElementsAreArray(vec));
 }
 
+TEST(memory_view, create_from_file)
+{
+    std::vector<int> vec = {0, 1, 2, 3};
+    {
+        std::ofstream out("tmpfile");
+        out.write(reinterpret_cast<char*>(&vec[0]), vec.size() * sizeof(int));
+    }
+    std::ifstream is("tmpfile");
+    mv::memory_view mv(mv::istream_memory_source(is, 16));
+    ASSERT_THAT(mv.as_span<int>(), ::testing::ElementsAreArray(vec));
+}
+
+class dummy_handler {
+public:
+    virtual void invalidate() { invalidated = true; };
+    bool invalidated = false;
+};
+
+class dummy_wrapper : public mv::base_handler {
+public:
+    dummy_wrapper(dummy_handler& h) : h_(h) {}
+    dummy_handler& h_;
+    ~dummy_wrapper() { h_.invalidate(); }
+};
+
+class dummy_source {
+public:
+    dummy_source(dummy_handler& h) : h_(h) {}
+    const mv::slice_data slice(std::ptrdiff_t begin, std::ptrdiff_t end) const
+    {
+        return {nullptr, std::make_shared<dummy_wrapper>(h_)};
+    }
+    std::size_t size() const { return 16u; }
+    dummy_handler& h_;
+};
+
+TEST(memory_view, lifetime)
+{
+    dummy_handler h;
+    {
+        mv::memory_view v = mv::memory_view(dummy_source(h));
+        ASSERT_FALSE(h.invalidated);
+    }
+    // No access was made so no invalidation.
+    ASSERT_FALSE(h.invalidated);
+    {
+        mv::memory_view v = mv::memory_view(dummy_source(h));
+        v.as_ptr();
+    }
+    // No access was made so no invalidation.
+    ASSERT_TRUE(h.invalidated);
+}
+
 };  // namespace
 
 int main(int argc, char** argv)

@@ -8,13 +8,10 @@ target_include_directories(memory_view INTERFACE
     $<BUILD_INTERFACE:${memory_view_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
-find_package(Boost COMPONENTS iostreams REQUIRED)
 find_package(GSL REQUIRED)
-target_link_libraries(memory_view INTERFACE
-    Boost::boost
-    Boost::iostreams
-    GSL::gsl
-    )
+target_link_libraries(memory_view INTERFACE GSL::gsl)
+install(FILES include/memory_view.hpp DESTINATION include)
+export(PACKAGE memory_view)
 
 enable_testing()
 add_subdirectory(test)

@@ -34,30 +34,21 @@ namespace mv {
 
 class memory_view;
 
-/// A handler manages the lifetime of a fetched memory `span`.
+/// A handler manages the lifetime of a fetched memory area.
 /// When dealing with static memory, such as an in-memory array or a
-/// memory mapped file, the default empty object can be used.
+/// memory mapped file, a nullptr can be used.
 /// When managing memory by lazy loading or caching, this object
 /// defines the lifetime: once the handler object goes out of scope
-/// the memory pointed by the span can be invalidated.
-/// Effectively, this means that there is no guarantee that the memory
-/// pointed to by a span is valid after the span goes out of scope.
-class handler {};
+/// the memory pointed by the view can be invalidated.
+class base_handler {};
 
-/// A span object points to a valid contiguous memory area.
-template<typename T>
-class span : public gsl::span<const T> {
+class owning_handler : public base_handler {
 public:
-    span(
-        const T* ptr,
-        std::ptrdiff_t count,
-        std::shared_ptr<handler> handler = nullptr)
-        : gsl::span<const T>(ptr, count), handler_(handler)
-    {}
+    owning_handler(std::vector<char> data) : data_(std::move(data)) {}
+    const char* data() const { return data_.data(); }
 
-    friend class memory_view;
 private:
-    std::shared_ptr<handler> handler_ = nullptr;
+    std::vector<char> data_{};
 };
 
 /// Represents the left end of a range when slicing.
@@ -65,6 +56,11 @@ struct begin_t {} begin;
 
 /// Represents the right end of a range when slicing.
 struct end_t {} end;
+
+struct slice_data {
+    const char* ptr;
+    std::shared_ptr<base_handler> handler;
+};
 
 /// A view to an arbitrary memory buffer, such as array, or memory mapped file.
 ///
@@ -100,19 +96,18 @@ public:
     template<typename T>
     T as() const
     {
-        auto data = self_->as_span(begin_, sizeof(T));
-        return *reinterpret_cast<const T*>(&data[0]);
+        return *reinterpret_cast<const T*>(ptr());
     }
 
     /// Returns a span of the given type.
+    const char* as_ptr() const { return ptr(); }
+
+    /// Returns a span of the given type.
     template<typename T>
-    span<T> as_span() const
+    gsl::span<const T> as_span() const
     {
-        auto char_span = self_->as_span(begin_, end_);
-        return span<T>(
-            reinterpret_cast<const T*>(&char_span[0]),
-            char_span.size() / sizeof(T),
-            char_span.handler_);
+        return gsl::span<const T>(
+            reinterpret_cast<const T*>(ptr()), size() / sizeof(T));
     }
 
     /// Unpacks the memory into several variables, returned as a tuple.
@@ -125,9 +120,7 @@ public:
     std::tuple<T...> unpack() const
     {
         std::ptrdiff_t offset = sizeof(std::tuple<T...>);
-        auto data = self_->as_span(begin_, offset);
-        const char* ptr = &data[0];
-        return std::make_tuple(*cast_and_move<T>(ptr, offset)...);
+        return std::make_tuple(*cast_and_move<T>(ptr(), offset)...);
     }
 
     /// Unpacks leading values and returns them along with the remaining slice.
@@ -136,9 +129,7 @@ public:
     {
         std::ptrdiff_t offset = sizeof(std::tuple<T...>);
         auto tail = this->operator()(offset, mv::end);
-        auto data = self_->as_span(begin_, offset);
-        const char* ptr = &data[0];
-        auto head = std::make_tuple(*cast_and_move<T>(ptr, offset)...);
+        auto head = std::make_tuple(*cast_and_move<T>(ptr(), offset)...);
         return std::tuple_cat(head, std::tuple<memory_view>(tail));
     }
 
@@ -154,6 +145,10 @@ public:
         memory_view copy = *this;
         copy.begin_ += first;
         copy.end_ = begin_ + last;
+        copy.slice_ = slice_;
+        if (slice_.ptr != nullptr) {
+            std::advance(copy.slice_.ptr, first);
+        }
         return copy;
     }
 
@@ -162,6 +157,10 @@ public:
     {
         memory_view copy = *this;
         copy.begin_ += first;
+        copy.slice_ = slice_;
+        if (slice_.ptr != nullptr) {
+            std::advance(copy.slice_.ptr, first);
+        }
         return copy;
     }
 
@@ -170,6 +169,7 @@ public:
     {
         memory_view copy = *this;
         copy.end_ = begin_ + last;
+        copy.slice_ = slice_;
         return copy;
     }
 
@@ -182,8 +182,8 @@ private:
         source_concept& operator=(source_concept&&) = default;
         virtual ~source_concept() = default;
 
-        virtual span<char>
-        as_span(std::ptrdiff_t begin, std::ptrdiff_t end) const = 0;
+        virtual const slice_data
+        slice(std::ptrdiff_t begin, std::ptrdiff_t end) const = 0;
 
         virtual std::size_t size() const = 0;
     };
@@ -193,10 +193,10 @@ private:
     public:
         explicit model(source_type source) : source_(std::move(source)) {}
 
-        span<char>
-        as_span(std::ptrdiff_t begin, std::ptrdiff_t end) const override
+        virtual const slice_data
+        slice(std::ptrdiff_t begin, std::ptrdiff_t end) const override
         {
-            return source_.as_span(begin, end);
+            return source_.slice(begin, end);
         }
 
         std::size_t size() const override { return source_.size(); }
@@ -206,20 +206,29 @@ private:
     };
 
     template<typename T>
-    const T* cast_and_move(const char* ptr, std::ptrdiff_t& offset) const
+    static const T* cast_and_move(const char* ptr, std::ptrdiff_t& offset)
     {
         offset -= sizeof(T);
         return reinterpret_cast<const T*>(ptr + offset);
     }
 
+    const char* ptr() const
+    {
+        if (slice_.ptr == nullptr) {
+            slice_ = self_->slice(begin_, end_);
+        }
+        return slice_.ptr;
+    }
+
     std::shared_ptr<source_concept> self_ = nullptr;
     std::ptrdiff_t begin_ = 0;
     std::ptrdiff_t end_ = 0;
+    mutable slice_data slice_ = {nullptr, nullptr};
 };
 
 /// Memory source based on an existing contiguous memory area.
 /// **Warning**: any data passed to the constructors must be valid for the
-///              entire lifetime of the memory source. It must be enfoced
+///              entire lifetime of the memory source. It must be enforced
 ///              by the user. In the future, this will be deprecated in
 ///              favor of a lifetime-aware solution (although most likely
 ///              this will still be available to use with a warning in place).
@@ -242,15 +251,50 @@ public:
     ptr_memory_source(ptr_memory_source&) = default;
     ptr_memory_source& operator=(const ptr_memory_source&) = default;
     ptr_memory_source& operator=(ptr_memory_source&&) = default;
-    const span<char> as_span(std::ptrdiff_t begin, std::ptrdiff_t end) const
+    const slice_data slice(std::ptrdiff_t begin, std::ptrdiff_t end) const
     {
-        return span<char>(std::next(ptr_, begin), end - begin);
+        return {std::next(ptr_, begin), nullptr};
     }
     std::size_t size() const { return len_; }
 
 private:
     const char* ptr_ = nullptr;
     std::size_t len_ = 0;
+};
+
+class istream_memory_source {
+public:
+    istream_memory_source(std::istream& stream, std::size_t size)
+        : stream_(stream), size_(size)
+    {}
+
+    istream_memory_source() = default;
+    ~istream_memory_source() = default;
+    istream_memory_source(const istream_memory_source&) = default;
+    istream_memory_source(istream_memory_source&) = default;
+    istream_memory_source& operator=(const istream_memory_source&) = default;
+    istream_memory_source& operator=(istream_memory_source&&) = default;
+    const slice_data slice(std::ptrdiff_t begin, std::ptrdiff_t end) const
+    {
+        auto data_vector = read(begin, end);
+        auto handler = std::make_shared<owning_handler>(data_vector);
+        return {handler->data(), handler};
+    }
+    std::size_t size() const { return size_; }
+
+private:
+    std::vector<char> read(std::ptrdiff_t begin, std::ptrdiff_t end) const
+    {
+        auto length = end - begin;
+        if (length == 0) { return {}; }
+        std::vector<char> data(length);
+        stream_.seekg(begin);
+        stream_.read(&data[0], length);
+        return data;
+    }
+
+    std::istream& stream_;
+    std::size_t size_ = 0u;
 };
 
 template<typename Container>
@@ -269,4 +313,4 @@ memory_view make_memory_view(const Container& container)
         container.size() * sizeof(T)));
 }
 
-}  // memory_view
+}  // namespace mv
